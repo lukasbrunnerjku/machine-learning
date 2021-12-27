@@ -1,52 +1,65 @@
 import cv2 as cv
 import torch
+from torch.functional import Tensor
 import torch.nn as nn
 import torch.optim as optim
 from torch.nn.parameter import Parameter
 from torch.distributions.normal import Normal
 import numpy as np
 from typing import Tuple
+from tqdm import tqdm
+import math
 import pdb
 
 
-class Discriminator(nn.Sequential):
+# class Discriminator(nn.Sequential):
+    
+#     def __init__(
+#             self, 
+#             nc: int = 1,
+#             ndf: int = 16,
+#             nlayers: int = 4, 
+#             bias: bool = True,
+#             batchnorm: bool = False,
+#         ):
+#         submodules = []
+#         cin = nc
+#         cout = ndf
+        
+#         for _ in range(nlayers):
+            
+#             if batchnorm:
+#                 submodules.extend([
+#                     nn.Conv2d(cin, cout, 4, 2, 1, bias=False),
+#                     nn.BatchNorm2d(cout),
+#                     nn.LeakyReLU(0.2, inplace=True),
+#                 ])
+#             else:
+#                 submodules.extend([
+#                     nn.Conv2d(cin, cout, 4, 2, 1, bias=bias),
+#                     nn.LeakyReLU(0.2, inplace=True),
+#                 ])
+            
+#             cin = cout
+#             cout = 2 * cin
+        
+#         submodules.append(nn.Conv2d(cin, 1, 1, 1))
+                    
+#         super().__init__(
+#             *submodules[:-1],
+#             nn.AdaptiveAvgPool2d((1, 1)),
+#             submodules[-1]
+#         )  # => returns logits
+
+class Discriminator(nn.Module):
     
     def __init__(
             self, 
-            nc: int = 1,
-            ndf: int = 16,
-            nlayers: int = 4, 
-            bias: bool = True,
-            batchnorm: bool = False,
+            nc: int = 1, 
         ):
-        submodules = []
-        cin = nc
-        cout = ndf
         
-        for _ in range(nlayers):
-            
-            if batchnorm:
-                submodules.extend([
-                    nn.Conv2d(cin, cout, 4, 2, 1, bias=False),
-                    nn.BatchNorm2d(cout),
-                    nn.LeakyReLU(0.2, inplace=True),
-                ])
-            else:
-                submodules.extend([
-                    nn.Conv2d(cin, cout, 4, 2, 1, bias=bias),
-                    nn.LeakyReLU(0.2, inplace=True),
-                ])
-            
-            cin = cout
-            cout = 2 * cin
-        
-        submodules.append(nn.Conv2d(cin, 1, 1, 1))
-                    
-        super().__init__(
-            *submodules[:-1],
-            nn.AdaptiveAvgPool2d((1, 1)),
-            submodules[-1]
-        )  # => returns logits
+    def forward(self, x):
+        # x is Bx1xHxW
         
         
 def weights_init(m):
@@ -60,27 +73,42 @@ def weights_init(m):
 
 if __name__ == '__main__':
     
-    canvas = np.ones((256, 256), dtype=np.float32)
+    # https://www.youtube.com/playlist?list=PL93aLKqThq4h7UpgeNhkOtEeCnX3DMseS
+    
+    canvas = np.ones((64, 64), dtype=np.float32)
     
     # z <=> center (x,y) position of rectangle
     
     # define source gaussian
-    z_mu_source = Parameter(torch.tensor([50.0, 40.0]))  # 2,
-    z_std_source = Parameter(torch.tensor([11.0, 12.0]))  # 2,
+    z_mu_source = Parameter(torch.tensor([10.0, 20.0]))  # 2,
+    z_log_std_source = Parameter(torch.log(torch.tensor([5.0, 6.0])))  # 2,
+    # std = exp( log_std ) thus log_std can be subject to unconstraint optimization
     
-    optG = optim.Adam((z_mu_source, z_std_source), lr=0.0002, betas=(0.5, 0.999))
+    def log_prob(z: Tensor):  # for source normal distribution
+        if sample.ndim != 2:
+            raise AttributeError
+        
+        N = sample.shape[0]
+        lp = -N*z_log_std_source - N/2*math.log(2*math.pi) - ((z - z_mu_source[None, :])**2).sum(0)/(2*torch.exp(z_log_std_source)**2)
+        return lp  # 2,
+    
+    optG = optim.Adam((z_mu_source, z_log_std_source), lr=0.05, betas=(0.7, 0.999))
     
     # define target gaussian
-    z_mu_target = Parameter(torch.tensor([150.0, 190.0]))
-    z_std_target = Parameter(torch.tensor([25.0, 20.0]))
+    z_mu_target = Parameter(torch.tensor([45.0, 49.0]))
+    z_std_target = Parameter(torch.tensor([9.0, 7.0]))
 
-    obj_wh = np.array([[8, 8]], dtype=np.float32)  # 1x2
+    obj_wh = np.array([3, 3], dtype=np.float32)  # 1x2
     
     # update distribution parameters with reparametrization trick
     unorm = Normal(torch.tensor([0.0, 0.0]), torch.tensor([1.0, 1.0]))  # 2,
     
     D = Discriminator()
     D.apply(weights_init)
+    nparams = sum(p.numel() for p in D.parameters() if p.requires_grad)
+    print(f'Discriminator parameters: {nparams/1e3:.3f}k')
+    
+    optD = optim.Adam(D.parameters(), lr=0.0005, betas=(0.5, 0.999))
     
     def render(z: np.ndarray) -> np.ndarray:
         if z.ndim == 2:
@@ -91,8 +119,8 @@ if __name__ == '__main__':
         x = np.empty((B, 1, *canvas.shape), dtype=np.float32)
         for b in range(B):
             img = canvas.copy()
-            tl: Tuple[int] = tuple(map(int, z - obj_wh))  
-            br: Tuple[int] = tuple(map(int, z + obj_wh))
+            tl: Tuple[int] = tuple(map(int, z[b] - obj_wh))  
+            br: Tuple[int] = tuple(map(int, z[b] + obj_wh))
             color: Tuple[int] = (0, 0, 0)
             cv.rectangle(img, tl, br, color, -1)
             x[b, 0] = img
@@ -103,44 +131,114 @@ if __name__ == '__main__':
     # G(z) := render(z1, z2,...) where z_i some random simulation variable ~ N(mu_i, sig_i)
     G = render
     
-    B = 8
+    B = 32
+    first = True
+    alpha = 0.9
+    u_ema = 0.0
     
-    criterion = nn.BCEWithLogitsLoss()
-    zeros = torch.zeros((B,), dtype=torch.float32)
-    ones = torch.ones((B,), dtype=torch.float32)
+    criterion = nn.BCEWithLogitsLoss(reduction='none')
+    zeros = torch.zeros((B,1,1,1), dtype=torch.float32)
+    ones = torch.ones((B,1,1,1), dtype=torch.float32)
          
-    # sample from the source distribution
-    z = z_mu_source + z_std_source * unorm.sample((B,))  # Bx2
-    samples = z
-    x_source = torch.from_numpy(G(z.detach().numpy()))  # Bx1xHxW
+    num_steps = 50
+    warmup_D_steps = 50
+    def draw_gaussian(img, mu, std, color):
+        mu: Tuple[int] = tuple(map(int, mu))  # 2,
+        std: Tuple[int] = tuple(map(int, std))  # 2,
+        cv.circle(img, mu, 3, color, thickness=-1)
+        cv.ellipse(img, mu, std, 0, 0, 360, color)
+        return img
     
-    # sample from the target distribution
-    z = z_mu_target + z_std_target * unorm.sample(B,)  # Bx2
-    x_target = render(z.detach().numpy())  # Bx1xHxW
-    
-    # standard GAN loss for the discriminator
-    lossD =  criterion(D(x_target), ones).mean() + criterion(D(x_source.detach()), zeros).mean()
-    
-    # the non-saturating GAN loss would be
-    # lossG = criterion(D(x_source), ones).mean()
-    # but we cannot backpropagate through the non-differentiable renderer!
-    # =>
-    samples
-    N = Normal(z_mu_source, z_std_source)
-    N.log_prob(samples)
-    
-    # while True:
-    
-    #     z = z_mu_source + z_std_source * unorm.sample()  # 2,
-    #     x = G(z.detach().numpy())  # Bx1xHxW
-    #     cv.imshow('source', x)
+    mus, stds = [], []
+    for global_step in tqdm(range(num_steps + warmup_D_steps)):
         
-    #     z = z_mu_target + z_std_target * unorm.sample()  # 2,
-    #     x = render(z.detach().numpy())
-    #     cv.imshow('target', x)
+        # sample from the source distribution
+        with torch.no_grad():
+            z = z_mu_source + torch.exp(z_log_std_source) * unorm.sample((B,))  # Bx2
+            sample = z
+            x_source = torch.from_numpy(G(z.detach().numpy()))  # Bx1xHxW
+            
+            # sample from the target distribution
+            z = z_mu_target + z_std_target * unorm.sample((B,))  # Bx2
+            x_target = torch.from_numpy(G(z.detach().numpy()))  # Bx1xHxW
+        
+        # standard GAN loss for the discriminator
+        optD.zero_grad(set_to_none=True)
+        lossD =  criterion(D(x_target), ones).mean() + criterion(D(x_source.detach()), zeros).mean()
+        lossD.backward()
+        optD.step()
+        
+        # skip "generator" training step, thus not update the simulation parameters
+        # at the beginning to let the discriminator produce more usefull gradients
+        if global_step < warmup_D_steps: 
+            continue
+        
+        if first:
+            # test how good the descriminator is
+            with torch.no_grad():
+                z = z_mu_source + torch.exp(z_log_std_source) * unorm.sample((B,))  # Bx2
+                x_source = torch.from_numpy(G(z.detach().numpy()))  # Bx1xHxW
                 
-    #     key = cv.waitKey(1000) & 0xFF
-    #     if key == ord('q'):
-    #         break
+                # sample from the target distribution
+                z = z_mu_target + z_std_target * unorm.sample((B,))  # Bx2
+                x_target = torch.from_numpy(G(z.detach().numpy()))  # Bx1xHxW
+                
+                probs_source = torch.sigmoid(D(x_source)).mean()  # should be low
+                probs_target = torch.sigmoid(D(x_target)).mean()  # should be high
+                print('probs source:', probs_source)
+                print('probs target:', probs_target)
+                
+        # the non-saturating GAN loss would be
+        # lossG = criterion(D(x_source), ones).mean()
+        # but we cannot backpropagate through the non-differentiable renderer!
+        # =>
         
-    # cv.destroyAllWindows()     
+        optG.zero_grad(set_to_none=True)
+        # here we have a single parameter to optimize thus we have a single distribution
+        # where we have sampled simulation parameters from, generally the probability p(x)
+        # that a rendered image x is from the simulation distribution p is the joint probability
+        # p(x) = p(z1, z2,...zN) (x = R(z1, z2,... zN)) for the N samples of simulation 
+        # parameters drawn (since the rendering function R is
+        # itself a deterministic function, thus which images are rendered only depends on
+        # the simulation parameter distributions)
+        log_probs = log_prob(sample)  # Bx2, calculate joint distribution p(z1,z2,..zN) <=> p(x)
+        # for independent simulation parameters we can sum the log_prob values
+        # to get the joint distribution!
+        
+        with torch.no_grad():  # calculate utility U(x)
+            u = criterion(D(x_source), ones)  # Bx1x1x1
+            u = u[:, :, 0, 0]  # Bx1
+        
+        lossG = (log_probs * (u - u_ema)).mean()
+        lossG.backward()
+        
+        print(z_mu_source.grad)
+        pdb.set_trace()
+        
+        optG.step()
+        
+        # track training trajectory in weight space
+        mus.append(z_mu_source.detach().numpy())
+        stds.append(torch.exp(z_log_std_source).detach().numpy())
+        
+        if first:  # reduce variance of estimator
+            u_ema = u.mean()
+            first = False
+        else:
+            u_ema = alpha * u.mean() + (1 - alpha) * u_ema
+            
+    
+    img = cv.cvtColor(canvas.copy(), cv.COLOR_GRAY2RGBA)  # HxWx4
+    for i, (mu, std) in enumerate(zip(mus, stds)):
+        alpha = 0.4 + i/len(mus) * 0.6
+        color = (1, 0, 0, alpha)
+        img = draw_gaussian(img, mu, std, color)
+    
+    mu = z_mu_target.detach().numpy()  # 2,
+    std = z_std_target.detach().numpy()  # 2,
+    img = draw_gaussian(img, mu, std, (0, 1, 0, 1))
+    
+    cv.imshow('', img)
+    cv.waitKey(0) 
+    cv.destroyAllWindows()
+    
