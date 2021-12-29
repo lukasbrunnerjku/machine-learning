@@ -15,6 +15,45 @@ import math
 import pdb
 
 
+# class Discriminator(nn.Sequential):
+    
+#     def __init__(
+#             self, 
+#             nc: int = 1,
+#             ndf: int = 16,
+#             nlayers: int = 4, 
+#             bias: bool = True,
+#             batchnorm: bool = False,
+#         ):
+#         submodules = []
+#         cin = nc
+#         cout = ndf
+        
+#         for _ in range(nlayers):
+            
+#             if batchnorm:
+#                 submodules.extend([
+#                     nn.Conv2d(cin, cout, 4, 2, 1, bias=False),
+#                     nn.BatchNorm2d(cout),
+#                     nn.LeakyReLU(0.2, inplace=True),
+#                 ])
+#             else:
+#                 submodules.extend([
+#                     nn.Conv2d(cin, cout, 4, 2, 1, bias=bias),
+#                     nn.LeakyReLU(0.2, inplace=True),
+#                 ])
+            
+#             cin = cout
+#             cout = 2 * cin
+        
+#         submodules.append(nn.Conv2d(cin, 1, 1, 1))
+                    
+#         super().__init__(
+#             *submodules[:-1],
+#             nn.AdaptiveAvgPool2d((1, 1)),
+#             submodules[-1]
+#         )  # => returns logits
+
 class Discriminator(nn.Module):
     
     def __init__(self, bias=False):
@@ -71,8 +110,13 @@ if __name__ == '__main__':
     optG = optim.Adam((z_mu_source, z_log_std_source), lr=1e-1, betas=(0.7, 0.999))
     
     # define target gaussian
-    z_mu_target = Parameter(torch.tensor([45.0, 49.0]))
-    z_std_target = Parameter(torch.tensor([9.0, 7.0]))
+    easy = True
+    if easy:
+        z_mu_target = Parameter(torch.tensor([15.0, 25.0]))
+        z_std_target = Parameter(torch.tensor([1.0, 1.0]))
+    else:
+        z_mu_target = Parameter(torch.tensor([45.0, 49.0])) 
+        z_std_target = Parameter(torch.tensor([9.0, 7.0]))
 
     obj_wh = np.array([3, 3], dtype=np.float32)  # 1x2
     
@@ -188,10 +232,7 @@ if __name__ == '__main__':
         # pdb.set_trace()
         
         optG.step()
-        
-        # # track training trajectory in weight space
-        # mus.append(z_mu_source.detach().numpy())
-        # stds.append(torch.exp(z_log_std_source).detach().numpy())
+
         lossesG.append(lossG.item())
         lossesD.append(lossD.item())
         
@@ -200,21 +241,6 @@ if __name__ == '__main__':
             first = False
         else:
             u_ema = alpha * u.mean(0, keepdims=True) + (1 - alpha) * u_ema
-            
-    
-    # img = cv.cvtColor(canvas.copy(), cv.COLOR_GRAY2RGBA)  # HxWx4
-    # for i, (mu, std) in enumerate(zip(mus, stds)):
-    #     alpha = 0.4 + i/len(mus) * 0.6
-    #     color = (1, 0, 0, alpha)
-    #     img = draw_gaussian(img, mu, std, color)
-    
-    # mu = z_mu_target.detach().numpy()  # 2,
-    # std = z_std_target.detach().numpy()  # 2,
-    # img = draw_gaussian(img, mu, std, (0, 1, 0, 1))
-    
-    # cv.imshow('', img)
-    # cv.waitKey(0) 
-    # cv.destroyAllWindows()
     
     print('mu:', z_mu_source.data, 'goal:', z_mu_target.data)
     print('std:', torch.exp(z_log_std_source.data), 'goal:', z_std_target.data)
