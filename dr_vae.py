@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 
 class Encoder(nn.Module):
     
-    def __init__(self, enc_out_dim: int = 128, latent_dim: int = 64):
+    def __init__(self, enc_out_dim: int = 512, latent_dim: int = 64):
         super().__init__()
         self.encoder = nn.Sequential(
             nn.Linear(32*32, 16*16),
@@ -41,7 +41,7 @@ class Encoder(nn.Module):
     
 class Decoder(nn.Module):
     
-    def __init__(self, dec_out_dim: int = 256, latent_dim: int = 64, out_dim: int = 2):
+    def __init__(self, dec_out_dim: int = 512, latent_dim: int = 64, out_dim: int = 2):
         super().__init__()
         
         self.decoder = nn.Sequential(
@@ -52,6 +52,7 @@ class Decoder(nn.Module):
         )
         self.fc_mu = nn.Linear(dec_out_dim, out_dim)
         self.fc_log_var = nn.Linear(dec_out_dim, out_dim)
+        # self.fc_mu.bias.data.fill_(40)
         
     def forward(self, z):
         
@@ -98,7 +99,7 @@ class Renderer:
     
     def __init__(self) -> None:
         self.canvas = np.ones((64, 64), dtype=np.float32)
-        self.obj_wh = np.array([3, 3], dtype=np.float32)
+        self.obj_wh = np.array([6, 6], dtype=np.float32)
         
     def render(self, s: np.ndarray) -> np.ndarray:
         if s.ndim == 2:  # s ... samples of xy rectangle centers
@@ -122,6 +123,8 @@ if __name__ == '__main__':
     # https://arxiv.org/pdf/1906.02691.pdf
     # https://towardsdatascience.com/variational-autoencoder-demystified-with-pytorch-implementation-3a06bee395ed
     # https://github.com/AntixK/PyTorch-VAE/blob/master/models/vanilla_vae.py
+    # https://www.datagen.tech/10-promising-synthesis-papers-from-cvpr-2021/
+
     
     renderer = Renderer()
     encoder = Encoder()
@@ -138,7 +141,7 @@ if __name__ == '__main__':
     
     # define target gaussian
     mu_target = torch.tensor([45.0, 49.0])
-    std_target = torch.tensor([9.0, 7.0])
+    std_target = torch.tensor([1.0, 2.0])
     dist_target = Normal(mu_target, std_target)
     
     B = 32
@@ -160,25 +163,30 @@ if __name__ == '__main__':
         mu_source, std_source = decoder(z)  # Bx2
         p = torch.distributions.Normal(mu_source, std_source)  # p(s|z)
         s = p.rsample()  # Bx2
-        x_source = torch.from_numpy(renderer.render(s.detach().numpy()))  # Bx1xHxW
         
-        #recon_loss = gaussian_likelihood(x_source, log_scale, x_target)
-        
-        # only valid when using gaussians for q,p
         with torch.no_grad():
-            recon_loss = F.mse_loss(x_source, x_target, reduction='none').mean((1,2,3))  # B,
-        
+            x_source = torch.from_numpy(renderer.render(s.detach().numpy()))  # Bx1xHxW
+            recon_loss = gaussian_likelihood(x_source, log_scale, x_target)
+            
+            # plt.imshow(x_source.numpy()[0,0])
+            # plt.show()
+            
         log_prob = p.log_prob(s).sum((1,))  # Bx2 -> joint B, 
         
         # kl on latent gaussian to be close to N(0, 1)
         kl = kl_divergence(z, mu, std)  # B,
         
         # elbo
-        elbo = (kl - log_prob * recon_loss)
+        elbo = (kl - (log_prob + recon_loss))
         elbo = elbo.mean()
         
         loss = elbo
         loss.backward()
+        
+        # print(decoder.fc_mu.bias.grad)
+        # print(decoder.fc_mu.weight.grad)
+        # print(decoder.fc_log_var.weight.grad)
+        # pdb.set_trace()
         
         losses.append(loss.item())
         

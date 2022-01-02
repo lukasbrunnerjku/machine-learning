@@ -217,10 +217,7 @@ if __name__ == '__main__':
         # parameters drawn (since the rendering function R is
         # itself a deterministic function, thus which images are rendered only depends on
         # the simulation parameter distributions)
-        log_probs = log_prob(sample)  # Bx2, calculate joint distribution p(z1,z2,..zN) <=> p(x)
-        #log_probs = Normal(z_mu_source, torch.exp(z_log_std_source)).log_prob(sample)
-        # for independent simulation parameters we can sum the log_prob values
-        # to get the joint distribution!
+        log_probs = log_prob(sample)  # Bx2
         
         with torch.no_grad():  # calculate utility U(x)
             u = criterion(D(x_source), ones)  # Bx1x1x1
