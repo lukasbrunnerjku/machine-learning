@@ -11,6 +11,7 @@ from typing import Tuple
 from tqdm import tqdm
 import math
 import pdb
+import matplotlib.pyplot as plt
 
 
 class Encoder(nn.Module):
@@ -100,7 +101,7 @@ class Renderer:
         self.obj_wh = np.array([3, 3], dtype=np.float32)
         
     def render(self, s: np.ndarray) -> np.ndarray:
-        if s.ndim == 2:
+        if s.ndim == 2:  # s ... samples of xy rectangle centers
             B = s.shape[0]
         else:
             B = 1
@@ -126,77 +127,70 @@ if __name__ == '__main__':
     encoder = Encoder()
     decoder = Decoder()
     
-    torch.optim.Adam(encoder.parameters(), lr=1e-4)
+    summary(encoder)
+    summary(decoder)
+    
+    optE = optim.Adam(encoder.parameters(), lr=1e-4)
+    optD = optim.Adam(decoder.parameters(), lr=1e-4)
     
     # for the gaussian likelihood
     log_scale = nn.Parameter(torch.Tensor([0.0]))
     
     # define target gaussian
-    z_mu_target = Parameter(torch.tensor([45.0, 49.0]))
-    z_std_target = Parameter(torch.tensor([9.0, 7.0]))
-
+    mu_target = torch.tensor([45.0, 49.0])
+    std_target = torch.tensor([9.0, 7.0])
+    dist_target = Normal(mu_target, std_target)
     
     B = 32
-    alpha=0.9
-    u_ema = 0.0
     num_steps = 100
+    losses = []
     
-    mus, stds = [], []
     for global_step in tqdm(range(num_steps)):
         
-        # sample from the source distribution
-        with torch.no_grad():
-            z = z_mu_source + torch.exp(z_log_std_source) * unorm.sample((B,))  # Bx2
-            sample = z
-            x_source = torch.from_numpy(G(z.detach().numpy()))  # Bx1xHxW
-            
-            # sample from the target distribution
-            z = z_mu_target + z_std_target * unorm.sample((B,))  # Bx2
-            x_target = torch.from_numpy(G(z.detach().numpy()))  # Bx1xHxW
-        
-        # standard GAN loss for the discriminator
+        optE.zero_grad(set_to_none=True)
         optD.zero_grad(set_to_none=True)
-        lossD =  criterion(D(x_target), ones).mean() + criterion(D(x_source.detach()), zeros).mean()
-        lossD.backward()
+        
+        s = dist_target.sample((B,))  # Bx2
+        x_target = torch.from_numpy(renderer.render(s))  # Bx1xHxW
+        mu, std = encoder(x_target)  # Bxlatent_dim
+        
+        q = torch.distributions.Normal(mu, std)  # q(z|x) approx. p(z|x)
+        z = q.rsample()  # Bxlatent_dim (r ... by reparametrization)
+
+        mu_source, std_source = decoder(z)  # Bx2
+        p = torch.distributions.Normal(mu_source, std_source)  # p(s|z)
+        s = p.rsample()  # Bx2
+        x_source = torch.from_numpy(renderer.render(s.detach().numpy()))  # Bx1xHxW
+        
+        #recon_loss = gaussian_likelihood(x_source, log_scale, x_target)
+        
+        # only valid when using gaussians for q,p
+        with torch.no_grad():
+            recon_loss = F.mse_loss(x_source, x_target, reduction='none').mean((1,2,3))  # B,
+        
+        log_prob = p.log_prob(s).sum((1,))  # Bx2 -> joint B, 
+        
+        # kl on latent gaussian to be close to N(0, 1)
+        kl = kl_divergence(z, mu, std)  # B,
+        
+        # elbo
+        elbo = (kl - log_prob * recon_loss)
+        elbo = elbo.mean()
+        
+        loss = elbo
+        loss.backward()
+        
+        losses.append(loss.item())
+        
+        optE.step()
         optD.step()
-        
-  
-        
-        optG.zero_grad(set_to_none=True)
-        log_probs = log_prob(sample)  # Bx2, calculate joint distribution p(z1,z2,..zN) <=> p(x)
-        # for independent simulation parameters we can sum the log_prob values
-        # to get the joint distribution!
-        
-        with torch.no_grad():  # calculate utility U(x)
-            u = criterion(D(x_source), ones)  # Bx1x1x1
-            u = u[:, :, 0, 0]  # Bx1
-        
-        lossG = (log_probs * (u - u_ema)).mean()
-        lossG.backward()
-        
-        optG.step()
-       
-        if first:  # reduce variance of estimator
-            u_ema = u.mean(0, keepdims=True)
-            first = False
-        else:
-            u_ema = alpha * u.mean(0, keepdims=True) + (1 - alpha) * u_ema
-            
     
-    # img = cv.cvtColor(canvas.copy(), cv.COLOR_GRAY2RGBA)  # HxWx4
-    # for i, (mu, std) in enumerate(zip(mus, stds)):
-    #     alpha = 0.4 + i/len(mus) * 0.6
-    #     color = (1, 0, 0, alpha)
-    #     img = draw_gaussian(img, mu, std, color)
+    z = Normal(torch.zeros_like(z), torch.ones_like(z)).sample()
+    # pdb.set_trace()
+    mu_source, std_source = decoder(z)
+    print('mu:', mu_source.data, 'goal:', mu_target.data)
+    print('std:', torch.exp(std_source.data), 'goal:', std_target.data)
     
-    # mu = z_mu_target.detach().numpy()  # 2,
-    # std = z_std_target.detach().numpy()  # 2,
-    # img = draw_gaussian(img, mu, std, (0, 1, 0, 1))
-    
-    # cv.imshow('', img)
-    # cv.waitKey(0) 
-    # cv.destroyAllWindows()
-    
-    print('mu:', z_mu_source.data, 'goal:', z_mu_target.data)
-    print('std:', torch.exp(z_log_std_source.data), 'goal:', z_std_target.data)
-    
+    plt.plot(losses, c='cyan', label='elbo')
+    plt.legend()
+    plt.show()

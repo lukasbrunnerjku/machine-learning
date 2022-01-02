@@ -176,6 +176,7 @@ if __name__ == '__main__':
         
         # sample from the source distribution
         with torch.no_grad():
+            # dist.rsample in torch distributions
             z = z_mu_source + torch.exp(z_log_std_source) * unorm.sample((B,))  # Bx2
             sample = z
             x_source = torch.from_numpy(G(z.detach().numpy()))  # Bx1xHxW
